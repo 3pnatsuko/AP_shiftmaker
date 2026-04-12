@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from ortools.sat.python import cp_model
 
-st.title("シフト最適化（完全版・最終）")
+st.title("シフト最適化（安定版・完全版）")
 
 # ---------------------------
 # 基本設定
@@ -12,7 +12,7 @@ staff_names = [f"スタッフ{i+1}" for i in range(num_staff)]
 hours = list(range(24))
 
 # ---------------------------
-# 必要人数（デフォルト設定あり）
+# 必要人数
 # ---------------------------
 st.subheader("必要人数")
 
@@ -25,11 +25,7 @@ for row in range(0, 24, 6):
             default_val = 1 if 0 <= h <= 6 else 4
             with cols[i]:
                 required[h] = st.number_input(
-                    f"{h}時",
-                    0,
-                    num_staff,
-                    default_val,
-                    key=f"req_{h}"
+                    f"{h}時", 0, num_staff, default_val, key=f"req_{h}"
                 )
 
 # ---------------------------
@@ -68,17 +64,17 @@ for i, s in enumerate(staff_names):
         with c1:
             st.markdown("🟠 勤務")
             for h in hours:
-                work_input[(s, h)] = st.checkbox(f"{h}", key=f"w_{s}_{h}")
+                work_input[(s, h)] = st.checkbox(f"{h}時", key=f"w_{s}_{h}")
 
         with c2:
             st.markdown("🔵 休憩")
             for h in hours:
-                break_input[(s, h)] = st.checkbox(f"{h}", key=f"b_{s}_{h}")
+                break_input[(s, h)] = st.checkbox(f"{h}時", key=f"b_{s}_{h}")
 
         with c3:
             st.markdown("📌 固定")
             for h in hours:
-                fixed_input[(s, h)] = st.checkbox(f"{h}", key=f"fix_{s}_{h}")
+                fixed_input[(s, h)] = st.checkbox(f"{h}時", key=f"fix_{s}_{h}")
 
 # ---------------------------
 # 解く関数
@@ -106,7 +102,7 @@ def solve(use_fix):
         model.Add(sum(1 - x[(s, h)] for h in lunch1) >= 1)
         model.Add(sum(1 - x[(s, h)] for h in lunch2) >= 1)
 
-    # 単発休憩禁止（9,10,14,15,16）
+    # 単発休憩禁止
     for s in staff_names:
         for h in [9, 10, 14, 15, 16]:
             if 0 < h < 23:
@@ -119,11 +115,15 @@ def solve(use_fix):
         model.Add(x[(s,9)] == 1).OnlyEnforceIf(early)
         model.Add(x[(s,10)] == 1).OnlyEnforceIf(early)
 
-    # 単発勤務禁止
+    # ★ 強化単発勤務禁止
     for s in staff_names:
-        for h in hours:
-            if 0 < h < 23:
-                model.Add(x[(s, h)] <= x[(s, h-1)] + x[(s, h+1)])
+        for h in range(1, 23):
+            model.Add(x[(s, h-1)] + x[(s, h+1)] >= x[(s, h)])
+
+    # ★ 勤務時間制限（超重要）
+    max_hours = 10
+    for s in staff_names:
+        model.Add(sum(x[(s, h)] for h in hours) <= max_hours)
 
     # 勤務時間
     total_work = {}
@@ -162,11 +162,11 @@ def solve(use_fix):
                 if fixed_input[(s, h)]:
                     model.Add(x[(s, h)] == 1)
 
-    # ★ 目的関数（勤務希望強化）
+    # ★ 安定バランス
     model.Minimize(
-        sum(diff_vars) * 10
+        sum(diff_vars) * 50
         - sum(
-            50 * x[(s, h)]
+            20 * x[(s, h)]
             for s in staff_names
             for h in hours
             if work_input[(s, h)]
