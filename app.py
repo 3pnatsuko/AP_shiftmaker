@@ -104,7 +104,7 @@ def solve(use_fix):
 
     # 単発休憩禁止
     for s in staff_names:
-        for h in [9, 10, 14, 15, 16]:
+        for h in [9, 14, 15, 16]:
             if 0 < h < 23:
                 model.Add((1 - x[(s, h)]) <= (1 - x[(s, h-1)]) + (1 - x[(s, h+1)]))
 
@@ -113,12 +113,15 @@ def solve(use_fix):
         early = model.NewBoolVar(f"early_{s}")
         model.AddMaxEquality(early, [x[(s,6)], x[(s,7)], x[(s,8)]])
         model.Add(x[(s,9)] == 1).OnlyEnforceIf(early)
-        model.Add(x[(s,10)] == 1).OnlyEnforceIf(early)
 
     # ★ 強化単発勤務禁止
     for s in staff_names:
         for h in range(1, 23):
             model.Add(x[(s, h-1)] + x[(s, h+1)] >= x[(s, h)])
+
+    # ★ 10時休憩は2時間以上（11時も休憩必須）
+    for s in staff_names:
+        model.Add((1 - x[(s,10)]) <= (1 - x[(s,11)]))
 
     # ★ 勤務時間制限（超重要）
     max_hours = 10
