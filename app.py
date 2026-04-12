@@ -2,14 +2,17 @@ import streamlit as st
 import pandas as pd
 from ortools.sat.python import cp_model
 
-st.title("シフト最適化（再計算・固定機能付き）")
+st.title("シフト最適化（完全版・最終）")
 
-num_staff = st.number_input("スタッフ人数", 1, 20, 6)
+# ---------------------------
+# 基本設定
+# ---------------------------
+num_staff = st.number_input("スタッフ人数", 1, 20, 8)
 staff_names = [f"スタッフ{i+1}" for i in range(num_staff)]
 hours = list(range(24))
 
 # ---------------------------
-# 必要人数
+# 必要人数（デフォルト設定あり）
 # ---------------------------
 st.subheader("必要人数")
 
@@ -19,55 +22,68 @@ for row in range(0, 24, 6):
     for i in range(6):
         h = row + i
         if h < 24:
+            default_val = 1 if 0 <= h <= 6 else 4
             with cols[i]:
-                required[h] = st.number_input(f"{h}時", 0, num_staff, 3, key=f"req_{h}")
+                required[h] = st.number_input(
+                    f"{h}時",
+                    0,
+                    num_staff,
+                    default_val,
+                    key=f"req_{h}"
+                )
 
 # ---------------------------
-# 希望入力
+# 入力
 # ---------------------------
-st.subheader("希望入力")
-
 work_input = {}
 break_input = {}
+fixed_input = {}
 
 tabs = st.tabs(staff_names)
 
 for i, s in enumerate(staff_names):
     with tabs[i]:
+
         st.write(f"### {s}")
 
-        c1, c2 = st.columns(2)
+        # ナイトボタン
+        cbtn1, cbtn2 = st.columns(2)
+
+        if cbtn1.button("🌙 ナイト", key=f"night_{s}"):
+            for h in hours:
+                st.session_state[f"w_{s}_{h}"] = (h in [22, 23] or 0 <= h <= 6)
+                st.session_state[f"b_{s}_{h}"] = not st.session_state[f"w_{s}_{h}"]
+
+        if cbtn2.button("🌙 半ナイト", key=f"half_{s}"):
+            for h in hours:
+                if h in [21, 22, 23]:
+                    st.session_state[f"w_{s}_{h}"] = True
+                    st.session_state[f"b_{s}_{h}"] = False
+                elif 0 <= h <= 11:
+                    st.session_state[f"w_{s}_{h}"] = False
+                    st.session_state[f"b_{s}_{h}"] = True
+
+        c1, c2, c3 = st.columns(3)
 
         with c1:
-            st.markdown("🟠 勤務希望")
+            st.markdown("🟠 勤務")
             for h in hours:
-                work_input[(s, h)] = st.checkbox(f"{h}時勤務", key=f"w_{s}_{h}")
+                work_input[(s, h)] = st.checkbox(f"{h}", key=f"w_{s}_{h}")
 
         with c2:
-            st.markdown("🔵 休憩希望")
+            st.markdown("🔵 休憩")
             for h in hours:
-                break_input[(s, h)] = st.checkbox(f"{h}時休憩", key=f"b_{s}_{h}")
+                break_input[(s, h)] = st.checkbox(f"{h}", key=f"b_{s}_{h}")
+
+        with c3:
+            st.markdown("📌 固定")
+            for h in hours:
+                fixed_input[(s, h)] = st.checkbox(f"{h}", key=f"fix_{s}_{h}")
 
 # ---------------------------
-# 固定入力（ここが新機能）
+# 解く関数
 # ---------------------------
-st.subheader("固定（再計算用）")
-
-fixed_input = {}
-
-tabs_fixed = st.tabs(staff_names)
-
-for i, s in enumerate(staff_names):
-    with tabs_fixed[i]:
-        st.write(f"### {s}")
-
-        for h in hours:
-            fixed_input[(s, h)] = st.checkbox(f"{h}時を固定", key=f"fix_{s}_{h}")
-
-# ---------------------------
-# 実行関数
-# ---------------------------
-def solve(fix_mode=False):
+def solve(use_fix):
 
     model = cp_model.CpModel()
     x = {(s, h): model.NewBoolVar(f"x_{s}_{h}") for s in staff_names for h in hours}
@@ -76,7 +92,7 @@ def solve(fix_mode=False):
     for h in hours:
         model.Add(sum(x[(s, h)] for s in staff_names) == required[h])
 
-    # 休憩希望
+    # 休憩希望（絶対）
     for s in staff_names:
         for h in hours:
             if break_input[(s, h)]:
@@ -90,7 +106,20 @@ def solve(fix_mode=False):
         model.Add(sum(1 - x[(s, h)] for h in lunch1) >= 1)
         model.Add(sum(1 - x[(s, h)] for h in lunch2) >= 1)
 
-    # 単発禁止
+    # 単発休憩禁止（9,10,14,15,16）
+    for s in staff_names:
+        for h in [9, 10, 14, 15, 16]:
+            if 0 < h < 23:
+                model.Add((1 - x[(s, h)]) <= (1 - x[(s, h-1)]) + (1 - x[(s, h+1)]))
+
+    # 早番制約
+    for s in staff_names:
+        early = model.NewBoolVar(f"early_{s}")
+        model.AddMaxEquality(early, [x[(s,6)], x[(s,7)], x[(s,8)]])
+        model.Add(x[(s,9)] == 1).OnlyEnforceIf(early)
+        model.Add(x[(s,10)] == 1).OnlyEnforceIf(early)
+
+    # 単発勤務禁止
     for s in staff_names:
         for h in hours:
             if 0 < h < 23:
@@ -102,23 +131,14 @@ def solve(fix_mode=False):
         total_work[s] = model.NewIntVar(0, 24, f"total_{s}")
         model.Add(total_work[s] == sum(x[(s, h)] for h in hours))
 
+    # 偏り
     avg = sum(required[h] for h in hours) // num_staff
-
     diff_vars = []
+
     for s in staff_names:
         diff = model.NewIntVar(0, 24, f"diff_{s}")
         model.AddAbsEquality(diff, total_work[s] - avg)
         diff_vars.append(diff)
-
-    # 偏り制御
-    max_work = model.NewIntVar(0, 24, "max_work")
-    min_work = model.NewIntVar(0, 24, "min_work")
-
-    for s in staff_names:
-        model.Add(total_work[s] <= max_work)
-        model.Add(total_work[s] >= min_work)
-
-    model.Add(max_work - min_work <= 2)
 
     # 最大3ブロック
     for s in staff_names:
@@ -133,20 +153,24 @@ def solve(fix_mode=False):
                 model.Add(start <= x[(s, h)])
                 model.Add(start <= 1 - x[(s, h-1)])
             starts.append(start)
-
         model.Add(sum(starts) <= 3)
 
-    # ★ 固定（再計算時のみ）
-    if fix_mode:
+    # 固定
+    if use_fix:
         for s in staff_names:
             for h in hours:
                 if fixed_input[(s, h)]:
                     model.Add(x[(s, h)] == 1)
 
-    # 目的関数
+    # ★ 目的関数（勤務希望強化）
     model.Minimize(
-        sum(diff_vars) * 1000
-        - sum(x[(s, h)] for s in staff_names for h in hours if work_input[(s, h)])
+        sum(diff_vars) * 10
+        - sum(
+            50 * x[(s, h)]
+            for s in staff_names
+            for h in hours
+            if work_input[(s, h)]
+        )
     )
 
     solver = cp_model.CpSolver()
@@ -155,6 +179,7 @@ def solve(fix_mode=False):
     status = solver.Solve(model)
 
     if status in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
+
         schedule = pd.DataFrame(0, index=staff_names, columns=hours)
 
         for s in staff_names:
@@ -172,9 +197,9 @@ def solve(fix_mode=False):
         def color_map(val):
             return "background-color: #F6A068" if val == 1 else "background-color: #FFEEDB"
 
-        styled = display_df.style.map(color_map).format(lambda x: "").set_properties(**{
-            "border": "2px solid #999",
-            "text-align": "center"
+        styled = display_df.style.map(color_map).format("").set_properties(**{
+            "text-align": "center",
+            "border": "1px solid #999"
         })
 
         st.dataframe(styled, use_container_width=True)
