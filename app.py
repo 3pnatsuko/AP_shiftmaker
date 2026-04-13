@@ -120,11 +120,11 @@ def solve(use_fix):
             model.Add(x[(s, h-1)] + x[(s, h+1)] >= x[(s, h)])
 
     # ★ 連続勤務6時間まで（5〜22時）
-for s in staff_names:
-    for start in range(5, 22 - 6):  # 7時間連続の開始位置
-        model.Add(
-            sum(x[(s, h)] for h in range(start, start + 7)) <= 6
-        )
+    for s in staff_names:
+        for start in range(5, 22 - 6):  # 7時間連続の開始位置
+            model.Add(
+                sum(x[(s, h)] for h in range(start, start + 7)) <= 6
+            )
 
     # ★ 10時休憩は2時間以上（11時も休憩必須）
     for s in staff_names:
